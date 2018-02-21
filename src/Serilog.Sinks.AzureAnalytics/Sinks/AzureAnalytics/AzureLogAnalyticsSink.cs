@@ -32,28 +32,36 @@ namespace Serilog.Sinks
 {
     internal class AzureLogAnalyticsSink : BatchProvider, ILogEventSink
     {
-        private readonly Uri             _analyticsUrl;
-        private readonly string          _authenticationId;
+        private static readonly HttpClient _httpClient;
+        private static readonly MediaTypeHeaderValue _contentType;
+        private readonly Uri _analyticsUrl;
+        private readonly string _authenticationId;
         private readonly IFormatProvider _formatProvider;
-        private readonly string          _logName;
-        private readonly bool            _storeTimestampInUtc;
-        private readonly string          _workSpaceId;
+        private readonly string _logName;
+        private readonly bool _storeTimestampInUtc;
+        private readonly string _workSpaceId;
+
+        static AzureLogAnalyticsSink()
+        {
+            _httpClient = new HttpClient();
+            _contentType = MediaTypeHeaderValue.Parse("application/json");
+        }
 
         internal AzureLogAnalyticsSink(
-            string            workSpaceId,
-            string            authenticationId,
-            string            logName,
-            bool              storeTimestampInUtc,
-            IFormatProvider   formatProvider,
-            int               logBufferSize     = 25_000,
-            int               batchSize         = 100,
+            string workSpaceId,
+            string authenticationId,
+            string logName,
+            bool storeTimestampInUtc,
+            IFormatProvider formatProvider,
+            int logBufferSize = 25_000,
+            int batchSize = 100,
             AzureOfferingType azureOfferingType = AzureOfferingType.Public) : base(batchSize, logBufferSize)
         {
-            _workSpaceId         = workSpaceId;
-            _authenticationId    = authenticationId;
-            _logName             = logName;
+            _workSpaceId = workSpaceId;
+            _authenticationId = authenticationId;
+            _logName = logName;
             _storeTimestampInUtc = storeTimestampInUtc;
-            _formatProvider      = formatProvider;
+            _formatProvider = formatProvider;
 
             var urlSuffix = azureOfferingType == AzureOfferingType.US_Government ? ".us" : ".com";
             _analyticsUrl =
@@ -133,28 +141,27 @@ namespace Serilog.Sinks
         {
             try
             {
-                using (var client = new HttpClient())
+                using (var request = new HttpRequestMessage(HttpMethod.Post, _analyticsUrl))
                 {
-                    client.DefaultRequestHeaders.Clear();
-                    client.DefaultRequestHeaders.Add("Authorization", signature);
-                    client.DefaultRequestHeaders.Add("x-ms-date", dateString);
+                    request.Headers.Add("Authorization", signature);
+                    request.Headers.Add("x-ms-date", dateString);
+                    request.Content = new StringContent(jsonString);
+                    request.Content.Headers.ContentType = _contentType;
+                    request.Headers.Add("Log-Type", _logName);
 
-                    var stringContent = new StringContent(jsonString);
-                    stringContent.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json");
-                    stringContent.Headers.Add("Log-Type", _logName);
-                    var response = client.PostAsync(_analyticsUrl, stringContent)
-                        .Result;
+                    using (var response = await _httpClient.SendAsync(request))
+                    {
+                        var message = await response.Content.ReadAsStringAsync()
+                            .ConfigureAwait(false);
 
-                    var message = await response.Content.ReadAsStringAsync()
-                        .ConfigureAwait(false);
-
-                    SelfLog.WriteLine("{0}: {1}", response.ReasonPhrase, message);               
-                    return response.ReasonPhrase;
+                        SelfLog.WriteLine("{0}: {1}", response.ReasonPhrase, message);
+                        return response.ReasonPhrase;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                SelfLog.WriteLine("ERROR: " + (ex.InnerException??ex).Message);
+                SelfLog.WriteLine("ERROR: " + (ex.InnerException ?? ex).Message);
                 return "FAILED";
             }
         }
